@@ -1056,6 +1056,20 @@ class ZeMetricProfiler {
                   }
                 }
                 cur_sampling_ts = ts;
+                if (ts > kit->metric_end) {
+                  // one sample can span several kernels: skip all of them, not just one
+                  if (kernelsampled) {
+                    metric_logger->Log("\n");
+                    kernelsampled = false;
+                  }
+                  while ((kit != kinfo.end()) && (ts > kit->metric_end)) {
+                    kit++;
+                    dummy_global_instance_id++;
+                  }
+                  if (kit == kinfo.end()) {
+                    break;
+                  }
+                }
                 if ((ts >= kit->metric_start) && (ts <= kit->metric_end)) {
                   if (idle) {
                     metric_logger->Log("\n");	// separate from samples that do not belong to any kernels/commands
@@ -1079,20 +1093,9 @@ class ZeMetricProfiler {
                   str += "\n";
                   metric_logger->Log(str);
                 }
-                else {
-                  if (ts > kit->metric_end) {
-                    if (kernelsampled) {
-                      metric_logger->Log("\n");
-                      kernelsampled = false;	// reset for next kernel
-                    }
-                    kit++;  // move to next kernel
-                    dummy_global_instance_id++;
-                    if (kit == kinfo.end()) {
-                      break;  // we are done
-                    }
-                  }
-                  else { // ts < kit->metric_start
-                    // does not belong to any kernel/command
+                else { // ts < kit->metric_start
+                  // does not belong to any kernel/command
+                  {
                     if (idle_sampling_) {
                       auto sz = kit->kernel_name.size();
                       if (sz > 2) {
@@ -1244,9 +1247,14 @@ class ZeMetricProfiler {
           std::cerr << "[WARNING] Metric samples dropped." << std::endl;
       }
       else if (status != ZE_RESULT_SUCCESS) {
-          std::cerr << "[ERROR] zetMetricStreamerReadData failed with error code: "
-              << static_cast<std::size_t>(status) << std::endl;
-          PTI_ASSERT(status == ZE_RESULT_SUCCESS);
+          static bool reported = false;
+          if (!reported) {
+            reported = true;
+            std::cerr << "[ERROR] zetMetricStreamerReadData failed with error code: "
+                << static_cast<std::size_t>(status) << std::endl;
+          }
+          // a driver that cannot stream this group must not take the workload down
+          return 0;
       }
       return data_size;
   }
@@ -1342,15 +1350,27 @@ class ZeMetricProfiler {
       return f->good();
     };
 
+    // a read never splits a raw report, so a full read stops at a whole number of reports
+    size_t report_size = 0;
+    if (ZE_FUNC(zetMetricStreamerReadData)(streamer, 1, &report_size, nullptr) != ZE_RESULT_SUCCESS) {
+      report_size = 0;
+    }
+    const uint64_t max_read_size = (report_size > 0) ? ((MAX_METRIC_BUFFER / report_size) * report_size) : MAX_METRIC_BUFFER;
+
     desc->profiling_state_.store(PROFILER_ENABLED, std::memory_order_release);
     while (desc->profiling_state_.load(std::memory_order_acquire) != PROFILER_DISABLED) {
       auto size = EventBasedReadMetrics(event, streamer, raw_metrics, MAX_METRIC_BUFFER);
-      if (size > 0) {
+      while (size > 0) {
         // If we have data, dump it to the intermediate file
         if (UniController::IsMetricSamplingEnabled() && !dump_metrics (raw_metrics, size, &desc->metric_file_stream_)) {
           std::cerr << "[ERROR] Failed to write to sampling metrics file " << desc->metric_file_name_ << std::endl;
           break;
         }
+        if (size < max_read_size) {
+          break;
+        }
+        // the buffer was full: drain the backlog instead of waiting on the event
+        size = ReadMetrics(streamer, raw_metrics, MAX_METRIC_BUFFER);
       }
     }
 
@@ -1361,7 +1381,7 @@ class ZeMetricProfiler {
         std::cerr << "[ERROR] Failed to write to sampling metrics file " << desc->metric_file_name_ << std::endl;
         break;
       }
-      if (size < MAX_METRIC_BUFFER)
+      if (size < max_read_size)
         break;
       size = ReadMetrics(streamer, raw_metrics, MAX_METRIC_BUFFER);
     }
