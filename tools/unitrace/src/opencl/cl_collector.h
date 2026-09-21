@@ -204,7 +204,9 @@ inline double GetZeDeviceTimerNsPerCycle(cl_device_id device_id) {
     pci_props.pNext = nullptr;
     pci_props.stype = ZE_STRUCTURE_TYPE_PCI_EXT_PROPERTIES;
     ze_result_t status = ZE_FUNC(zeDevicePciGetPropertiesExt)(device, &pci_props);
-    PTI_ASSERT(status == ZE_RESULT_SUCCESS);
+    if (status != ZE_RESULT_SUCCESS) {
+      continue;
+    }
 
     if (pci_info.pci_domain == pci_props.address.domain &&
         pci_info.pci_bus == pci_props.address.bus &&
@@ -213,7 +215,9 @@ inline double GetZeDeviceTimerNsPerCycle(cl_device_id device_id) {
 
       ze_device_properties_t props{ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES_1_2, };
       ze_result_t status = ZE_FUNC(zeDeviceGetProperties)(device, &props);
-      PTI_ASSERT(status == ZE_RESULT_SUCCESS);
+      if ((status != ZE_RESULT_SUCCESS) || (props.timerResolution == 0)) {
+        return 0;
+      }
 
       last_seen_device_id = device_id;
       last_seen_ze_device_timer_ns_per_cycle = static_cast<double>(NSEC_IN_SEC) / static_cast<double>(props.timerResolution);
@@ -1093,18 +1097,25 @@ class ClCollector {
 
       if (options_.metric_stream) {
         double ns_per_cycle = GetZeDeviceTimerNsPerCycle(device);
-        PTI_ASSERT(ns_per_cycle > 0);
+        if (ns_per_cycle <= 0) {
+          static bool warned = false;
+          if (!warned) {
+            warned = true;
+            std::cerr << "[WARNING] Cannot match the OpenCL device to a Level Zero device. Kernel metrics will be incomplete" << std::endl;
+          }
+        }
+        else {
+          uint64_t ze_started;
+          uint64_t ze_ended;
 
-        uint64_t ze_started;
-        uint64_t ze_ended;
+          // convert time from nano seconds to cycles
+          ze_started = static_cast<double>(started) / ns_per_cycle;
+          ze_ended = static_cast<double>(ended) / ns_per_cycle;
 
-        // convert time from nano seconds to cycles
-        ze_started = static_cast<double>(started) / ns_per_cycle;
-        ze_ended = static_cast<double>(ended) / ns_per_cycle;
+          ClKernelProfileRecord rec{device, instance->kernel_id, ze_started, ze_ended, std::move(name)};
 
-        ClKernelProfileRecord rec{device, instance->kernel_id, ze_started, ze_ended, std::move(name)};
-
-        profile_records_.push_back(std::move(rec));
+          profile_records_.push_back(std::move(rec));
+        }
       }
     }
   }
@@ -1368,15 +1379,22 @@ class ClCollector {
       size_t base_addr = 0;
       size_t size = 0;
 
-      status = clGetKernelInfo(kernel, CL_KERNEL_BINARY_GPU_ADDRESS_INTEL, 0, nullptr, &size);
-      status = clGetKernelInfo(kernel, CL_KERNEL_BINARY_GPU_ADDRESS_INTEL, size, &base_addr, &size);
-
-      PTI_ASSERT(status == CL_SUCCESS);
-      instance->props.base_addr = (base_addr & 0xFFFFFFFF);
-      size = 0;
-      status = clGetKernelInfo(kernel, CL_KERNEL_BINARY_PROGRAM_INTEL, 0, nullptr, &size);
-      PTI_ASSERT(status == CL_SUCCESS);
-      instance->props.size = size;
+      // cl_intel private tokens: only stall sampling needs them and not every driver implements them
+      instance->props.base_addr = 0;
+      instance->props.size = 0;
+      if (collector->options_.stall_sampling) {
+        status = clGetKernelInfo(kernel, CL_KERNEL_BINARY_GPU_ADDRESS_INTEL, 0, nullptr, &size);
+        if (status == CL_SUCCESS) {
+          status = clGetKernelInfo(kernel, CL_KERNEL_BINARY_GPU_ADDRESS_INTEL, size, &base_addr, &size);
+        }
+        if (status == CL_SUCCESS) {
+          instance->props.base_addr = (base_addr & 0xFFFFFFFF);
+          size = 0;
+          if (clGetKernelInfo(kernel, CL_KERNEL_BINARY_PROGRAM_INTEL, 0, nullptr, &size) == CL_SUCCESS) {
+            instance->props.size = size;
+          }
+        }
+      }
 
       auto it = collector->kprops_.find(instance->props.name);
       if (it == collector->kprops_.end()) {
