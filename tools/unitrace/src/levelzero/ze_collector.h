@@ -128,6 +128,7 @@ struct ZeMetricQueryPools {
       status = ZE_FUNC(zetMetricQueryPoolCreate)(context, device, group, &desc, &pool);
       if (status != ZE_RESULT_SUCCESS) {
         std::cerr << "[ERROR] Failed to create metric query pool (status = 0x" << std::hex << status << std::dec << ")" << std::endl;
+        std::cerr << "[INFO] The driver may not support metric query pools. Try time-based sampling with --metric-sampling (-k)" << std::endl;
         _Exit(-1);  // immediately exit
       }
       pools_.push_back(pool);
@@ -161,6 +162,7 @@ struct ZeMetricQueryPools {
         status = ZE_FUNC(zetMetricQueryPoolCreate)(context, device, group, &desc, &pool);
         if (status != ZE_RESULT_SUCCESS) {
           std::cerr << "[ERROR] Failed to create metric query pool (status = 0x" << std::hex << status << std::dec << ")" << std::endl;
+          std::cerr << "[INFO] The driver may not support metric query pools. Try time-based sampling with --metric-sampling (-k)" << std::endl;
           _Exit(-1);  // immediately exit
         }
         pools_.push_back(pool);
