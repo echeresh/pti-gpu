@@ -958,6 +958,15 @@ class ZeMetricProfiler {
         }
         std::sort(kinfo.begin(), kinfo.end(), CompareInterval);
 
+        // Exact per-instance kernel time (device timestamps); sampled rows are
+        // quantized to the HW streamer period and undercount.
+        metric_logger->Log("\nKernelTime, Name, InstanceId, TimeNs\n");
+        for (const auto &ki : kinfo) {
+          metric_logger->Log("KernelTime, " + ki.kernel_name + ", "
+              + std::to_string(ki.global_instance_id) + ", "
+              + std::to_string(ki.metric_end - ki.metric_start) + "\n");
+        }
+
         auto metric_list = GetMetricList(device->metric_group_);
         PTI_ASSERT(!metric_list.empty());
 
@@ -1043,6 +1052,7 @@ class ZeMetricProfiler {
             const zet_typed_value_t *value = metrics.data();
             bool kernelsampled = false;
             bool idle = false;  // is the sample collected while the device is idle?
+            bool reached_end = false;
             for (uint32_t i = 0; i < num_samples; ++i) {
               uint32_t size = samples[i];
 
@@ -1067,6 +1077,7 @@ class ZeMetricProfiler {
                     dummy_global_instance_id++;
                   }
                   if (kit == kinfo.end()) {
+                    reached_end = true;
                     break;
                   }
                 }
@@ -1123,6 +1134,9 @@ class ZeMetricProfiler {
                 }
               }
               value += samples[i];
+              if (reached_end) {
+                break;
+              }
             }
           }
         }
