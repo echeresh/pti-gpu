@@ -1061,7 +1061,7 @@ class ZeMetricProfiler {
                 const zet_typed_value_t *v = value + j * metric_list.size();
                 uint64_t ts = v[ts_idx].value.ui64;
                 if (cur_sampling_ts != 0) {
-                  while (cur_sampling_ts >= ts) { // clock overflow
+                  while ((cur_sampling_ts > ts) && (cur_sampling_ts - ts > time_span_between_clock_resets / 2)) { // clock overflow, not a repeated ts
                       ts += time_span_between_clock_resets;
                   }
                 }
